@@ -1,7 +1,6 @@
 #include <Adafruit_NeoPixel.h>
 #include <EEPROM.h>
 
-
 #define PIN 6
 #define N_PIXELS 144
 #define COLOR_ORDER GRB
@@ -48,7 +47,8 @@ float blueOffset = 150;
 float heightScale = 2.0;  // Adjust this value to scale the VU height (1.0-5.0)
 int scaledHeight;          // Store scaled height value
 
-
+#define MODE0_SCALE 4  // 20% boost for Classic VU
+#define MODE2_SCALE 4  // 50% boost for Gradient VU
 // Helper functions
 uint32_t blendColor(uint32_t color1, uint32_t color2, float ratio) {
   uint8_t r = (uint8_t)(red(color1) * (1 - ratio) + red(color2) * ratio);
@@ -80,43 +80,43 @@ void loop() {
   switch(buttonPushCounter % 10) {
     case 0:
       vu();
-      Serial.println("Mode 0: Classic VU Meter");
+      //Serial.println("Mode 0: Classic VU Meter");
       break;
     case 1:
       vu2();
-      Serial.println("Mode 1: Mirror VU Meter");
+      //Serial.println("Mode 1: Mirror VU Meter");
       break;
     case 2:
       Vu3();
-      Serial.println("Mode 2: Gradient VU Meter");
+      //Serial.println("Mode 2: Gradient VU Meter");
       break;
     case 3:
       Vu4();
-      Serial.println("Mode 3: Rainbow VU Meter");
+      //Serial.println("Mode 3: Rainbow VU Meter");
       break;
     case 4:
       vu5();
-      Serial.println("Mode 4: Fire Effect");
+      //Serial.println("Mode 4: Fire Effect");
       break;
     case 5:
       vu6();
-      Serial.println("Mode 5: Pulsing Center");
+      // Serial.println("Mode 5: Pulsing Center");
       break;
     case 6:
       vu7();
-      Serial.println("Mode 6: Audio Comet");
+      //Serial.println("Mode 6: Audio Comet");
       break;
     case 7:
       vu8();
-      Serial.println("Mode 7: Color Spectrum");
+      //Serial.println("Mode 7: Color Spectrum");
       break;
     case 8:
       vu9();
-      Serial.println("Mode 8: Audio Fireworks");
+      //Serial.println("Mode 8: Audio Fireworks");
       break;
     case 9:
       vu10();
-      Serial.println("Mode 9: Digital Waveform");
+      //Serial.println("Mode 9: Digital Waveform");
       break;
   }
 }
@@ -126,7 +126,7 @@ void handleButton() {
   buttonState = digitalRead(buttonPin);
   if (buttonState != lastButtonState && buttonState == HIGH) {
     buttonPushCounter++;
-    EEPROM.write(0, buttonPushCounter % 4);
+    EEPROM.write(0, buttonPushCounter % 10);
   }
   lastButtonState = buttonState;
 }
@@ -167,19 +167,128 @@ int processAudioRaw() {
   return n;
 }
 
+void x_updatePeak(int height, int decaySpeed=1) {
+  if(height > peak) peak = height;
+  if(++dotCount >= (PEAK_FALL / decaySpeed)) {
+    if(peak > 0) peak--;
+    dotCount = 0;
+  }
+  
+  if(peak > 0 && peak < N_PIXELS) {
+    // Brighter peak dot
+    strip.setPixelColor(peak, Wheel2(map(peak, 0, N_PIXELS-1, 30, 150), 255));
+    // Add secondary glow
+    if(peak < N_PIXELS-1) {
+      strip.setPixelColor(peak+1, Wheel2(map(peak, 0, N_PIXELS-1, 30, 150), 100));
+    }
+  }
+}
+
+void updatePeak(int height) {
+  if(height > peak) peak = height;
+  if(++dotCount >= PEAK_FALL) {
+    if(peak > 0) peak--;
+    dotCount = 0;
+  }
+  
+  if(peak > 0 && peak < N_PIXELS) {
+    strip.setPixelColor(peak, Wheel(map(peak, 0, N_PIXELS-1, 30, 150)));
+  }
+}
+
+uint32_t Wheel(byte WheelPos) {
+  if(WheelPos < 85) {
+    return strip.Color(WheelPos * 3, 255 - WheelPos * 3, 0);
+  } else if(WheelPos < 170) {
+    WheelPos -= 85;
+    return strip.Color(255 - WheelPos * 3, 0, WheelPos * 3);
+  } else {
+    WheelPos -= 170;
+    return strip.Color(0, WheelPos * 3, 255 - WheelPos * 3);
+  }
+}
+
+uint32_t Wheel2(byte WheelPos, byte brightness) {
+  if(WheelPos < 85) {
+    return strip.Color(
+      (WheelPos * 3 * brightness) / 255,
+      ((255 - WheelPos * 3) * brightness) / 255,
+      0
+    );
+  } else if(WheelPos < 170) {
+    WheelPos -= 85;
+    return strip.Color(
+      ((255 - WheelPos * 3) * brightness) / 255,
+      0,
+      (WheelPos * 3 * brightness) / 255
+    );
+  } else {
+    WheelPos -= 170;
+    return strip.Color(
+      0,
+      (WheelPos * 3 * brightness) / 255,
+      ((255 - WheelPos * 3) * brightness) / 255
+    );
+  }
+}
 void vu() {
   int height = processAudio();
-  height = constrain(height, 0, N_PIXELS);
+  
+  // Apply scaling and constrain
+  height = constrain(height * MODE0_SCALE, 0, N_PIXELS);
 
-  // Solid color bar with peak dot
+  // Enhanced peak tracking
+  if(height > peak) peak = height + 2;  // Extra peak overshoot
+
+  // Brighter color mapping
   for(int i=0; i<N_PIXELS; i++) {
-    strip.setPixelColor(i, (i < height) ? Wheel(map(i, 0, N_PIXELS-1, 30, 150)) : 0);
+    if(i < height) {
+      // Boosted color intensity
+      strip.setPixelColor(i, Wheel2(map(i, 0, N_PIXELS-1, 30, 150), 255)); // Full brightness
+    } else {
+      strip.setPixelColor(i, 0);
+    }
+  }
+  
+  // Faster peak decay when music stops
+  x_updatePeak(height, 2); // 2x faster decay
+  strip.show();
+}
+
+
+void Vu3() { // Gradient VU
+  int height = processAudio();
+  
+  // Apply scaling with nonlinear curve
+  height = constrain(pow(height * MODE2_SCALE, 1.2), 0, N_PIXELS);
+
+  // More dramatic gradient
+  for(int i=0; i<N_PIXELS; i++) {
+    if(i < height) {
+      // Sharper color transition
+      float position = (float)i / height;
+      uint8_t r = position * 255 * 1.2;  // Red boost
+      uint8_t g = (1 - position) * 255 * 1.1; // Green sustain
+      strip.setPixelColor(i, strip.Color(
+        constrain(r, 0, 255),
+        constrain(g, 0, 255),
+        0
+      ));
+    } else {
+      strip.setPixelColor(i, 0);
+    }
+  }
+  
+  // Add trailing glow effect
+  for(int i=height; i<height+3; i++) {
+    if(i < N_PIXELS) {
+      strip.setPixelColor(i, strip.Color(255, 0, 0, 50)); // Red glow
+    }
   }
   
   updatePeak(height);
   strip.show();
 }
-
 void vu2() {
   uint8_t i;
   uint16_t minLvl, maxLvl;
@@ -238,27 +347,6 @@ void vu2() {
   if ((maxLvl - minLvl) < TOP) maxLvl = minLvl + TOP;
   minLvlAvg = (minLvlAvg * 63 + minLvl) >> 6;
   maxLvlAvg = (maxLvlAvg * 63 + maxLvl) >> 6;
-}
-
-void Vu3() {
-  int height = processAudio();
-  height = constrain(height, 0, N_PIXELS);
-
-  // Gradient from green to red
-  for(int i=0; i<N_PIXELS; i++) {
-    if(i < height) {
-      strip.setPixelColor(i, strip.Color(
-        map(i, 0, N_PIXELS-1, 0, 255),  // Red
-        map(i, 0, N_PIXELS-1, 255, 0),  // Green
-        0                               // Blue
-      ));
-    } else {
-      strip.setPixelColor(i, 0);
-    }
-  }
-  
-  updatePeak(height);
-  strip.show();
 }
 
 void Vu4() {
@@ -456,53 +544,7 @@ void vu10() { // Digital Waveform
   strip.show();
 }
 
-void updatePeak(int height) {
-  if(height > peak) peak = height;
-  if(++dotCount >= PEAK_FALL) {
-    if(peak > 0) peak--;
-    dotCount = 0;
-  }
-  
-  if(peak > 0 && peak < N_PIXELS) {
-    strip.setPixelColor(peak, Wheel(map(peak, 0, N_PIXELS-1, 30, 150)));
-  }
-}
 
-uint32_t Wheel(byte WheelPos) {
-  if(WheelPos < 85) {
-    return strip.Color(WheelPos * 3, 255 - WheelPos * 3, 0);
-  } else if(WheelPos < 170) {
-    WheelPos -= 85;
-    return strip.Color(255 - WheelPos * 3, 0, WheelPos * 3);
-  } else {
-    WheelPos -= 170;
-    return strip.Color(0, WheelPos * 3, 255 - WheelPos * 3);
-  }
-}
-
-uint32_t Wheel2(byte WheelPos, byte brightness) {
-  if(WheelPos < 85) {
-    return strip.Color(
-      (WheelPos * 3 * brightness) / 255,
-      ((255 - WheelPos * 3) * brightness) / 255,
-      0
-    );
-  } else if(WheelPos < 170) {
-    WheelPos -= 85;
-    return strip.Color(
-      ((255 - WheelPos * 3) * brightness) / 255,
-      0,
-      (WheelPos * 3 * brightness) / 255
-    );
-  } else {
-    WheelPos -= 170;
-    return strip.Color(
-      0,
-      (WheelPos * 3 * brightness) / 255,
-      ((255 - WheelPos * 3) * brightness) / 255
-    );
-  }
-}
 
 
 
