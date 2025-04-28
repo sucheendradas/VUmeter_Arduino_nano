@@ -1,6 +1,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <EEPROM.h>
 
+
 #define PIN 6
 #define N_PIXELS 144
 #define COLOR_ORDER GRB
@@ -11,6 +12,9 @@
 #define SAMPLES 60
 #define PEAK_FALL 4      // Faster peak decay for 144 LEDs
 #define N_PIXELS_HALF (N_PIXELS / 2)
+
+#define TOP (N_PIXELS + 2)  // Allow peak to slightly exceed LED count
+
 
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(N_PIXELS, PIN, NEO_GRB + NEO_KHZ800);
 
@@ -31,6 +35,10 @@ byte volCount = 0;
 float greenOffset = 30;
 float blueOffset = 150;
 
+//vu meter scaleing
+float heightScale = 2.0;  // Adjust this value to scale the VU height (1.0-5.0)
+int scaledHeight;          // Store scaled height value
+
 void setup() {
   delay(2000);
   strip.begin();
@@ -46,9 +54,9 @@ void loop() {
   
   switch(buttonPushCounter % 4) {
     case 0:{ vu(); Serial.println("vu_0") ;}break;
-    case 1: vu2(); break;
-    case 2: Vu3(); break;
-    case 3: Vu4(); break;
+    case 1:{ vu2(); Serial.println("vu_2") ;}break;
+    case 2:{ Vu3(); Serial.println("vu_3") ;}break;
+    case 3:{ Vu4(); Serial.println("vu_4") ;}break;
   }
 }
 
@@ -101,18 +109,63 @@ void vu() {
 }
 
 void vu2() {
-  int height = processAudio();
-  height = constrain(height, 0, N_PIXELS_HALF);
+  uint8_t i;
+  uint16_t minLvl, maxLvl;
+  int n, rawHeight;
 
-  // Mirror effect
-  for(int i=0; i<N_PIXELS_HALF; i++) {
-    uint32_t color = (i < height) ? Wheel(map(i, 0, N_PIXELS_HALF-1, 30, 150)) : 0;
+  // Audio processing
+  n = analogRead(MIC_PIN);
+  n = abs(n - DC_OFFSET);
+  n = (n <= NOISE) ? 0 : (n - NOISE);
+  n /= 2;  // Fixed sensitivity
+
+  lvl = ((lvl * 7) + n) >> 3;  // Smoothed reading
+
+  // Height calculation with scaling
+  rawHeight = TOP * (lvl - minLvlAvg) / (long)(maxLvlAvg - minLvlAvg);
+  int scaledHeight = constrain(rawHeight * heightScale, 0, N_PIXELS_HALF);
+
+  // Update peaks
+  if (scaledHeight > peak) peak = scaledHeight;
+
+  // Mirror VU visualization
+  for (i = 0; i < N_PIXELS_HALF; i++) {
+    uint32_t color = (i < scaledHeight) ? 
+      Wheel(map(i, 0, N_PIXELS_HALF - 1, 30, 150)) : 
+      strip.Color(0, 0, 0);
+      
     strip.setPixelColor(N_PIXELS_HALF - i - 1, color);
     strip.setPixelColor(N_PIXELS_HALF + i, color);
   }
-  
-  updatePeak(height);
+
+  // Draw peak dots
+  if (peak > 0 && peak <= N_PIXELS_HALF - 1) {
+    uint32_t peakColor = Wheel(map(peak, 0, N_PIXELS_HALF - 1, 30, 150));
+    strip.setPixelColor(N_PIXELS_HALF - peak - 1, peakColor);
+    strip.setPixelColor(N_PIXELS_HALF + peak, peakColor);
+  }
+
   strip.show();
+
+  // Peak falling (adjusted for 144 LEDs)
+  if (++dotCount >= PEAK_FALL) {
+    if (peak > 0) peak--;
+    dotCount = 0;
+  }
+
+  // Dynamic level adjustment
+  vol[volCount] = n;
+  if (++volCount >= SAMPLES) volCount = 0;
+  
+  minLvl = maxLvl = vol[0];
+  for (i = 1; i < SAMPLES; i++) {
+    if (vol[i] < minLvl) minLvl = vol[i];
+    else if (vol[i] > maxLvl) maxLvl = vol[i];
+  }
+  
+  if ((maxLvl - minLvl) < TOP) maxLvl = minLvl + TOP;
+  minLvlAvg = (minLvlAvg * 63 + minLvl) >> 6;
+  maxLvlAvg = (maxLvlAvg * 63 + maxLvl) >> 6;
 }
 
 void Vu3() {
@@ -137,22 +190,68 @@ void Vu3() {
 }
 
 void Vu4() {
-  static float offset = 0;
-  int height = processAudio();
-  height = constrain(height, 0, N_PIXELS_HALF);
-  offset += 0.4;
-  if(offset >= 255) offset = 0;
+  uint8_t i;
+  uint16_t minLvl, maxLvl;
+  int n, rawHeight;
+  static float colorOffset = 0;
 
-  // Moving rainbow effect
-  for(int i=0; i<N_PIXELS_HALF; i++) {
-    uint32_t color = (i < height) ? Wheel(map(i, 0, N_PIXELS_HALF-1, offset, offset+150) % 255) : 0;
+  // Audio processing
+  n = analogRead(MIC_PIN);
+  n = abs(n - DC_OFFSET);
+  n = (n <= NOISE) ? 0 : (n - NOISE);
+  n /= 2;  // Fixed sensitivity
+
+  lvl = ((lvl * 7) + n) >> 3;  // Smoothed reading
+
+  // Height calculation with scaling
+  rawHeight = TOP * (lvl - minLvlAvg) / (long)(maxLvlAvg - minLvlAvg);
+  int scaledHeight = constrain(rawHeight * heightScale, 0, N_PIXELS_HALF);
+
+  // Update peaks and color offset
+  if (scaledHeight > peak) peak = scaledHeight;
+  colorOffset += 0.8;
+  if (colorOffset >= 255) colorOffset = 0;
+
+  // Moving rainbow visualization
+  for (i = 0; i < N_PIXELS_HALF; i++) {
+    uint32_t color = (i < scaledHeight) ? 
+      Wheel((map(i, 0, N_PIXELS_HALF - 1, colorOffset, colorOffset + 150)) % 255) : 
+      strip.Color(0, 0, 0);
+      
     strip.setPixelColor(N_PIXELS_HALF - i - 1, color);
     strip.setPixelColor(N_PIXELS_HALF + i, color);
   }
-  
-  updatePeak(height);
+
+  // Draw peak dots
+  if (peak > 0 && peak <= N_PIXELS_HALF - 1) {
+    uint32_t peakColor = Wheel((map(peak, 0, N_PIXELS_HALF - 1, colorOffset, colorOffset + 150)) % 255);
+    strip.setPixelColor(N_PIXELS_HALF - peak - 1, peakColor);
+    strip.setPixelColor(N_PIXELS_HALF + peak, peakColor);
+  }
+
   strip.show();
+
+  // Peak falling (adjusted for 144 LEDs)
+  if (++dotCount >= PEAK_FALL) {
+    if (peak > 0) peak--;
+    dotCount = 0;
+  }
+
+  // Dynamic level adjustment
+  vol[volCount] = n;
+  if (++volCount >= SAMPLES) volCount = 0;
+  
+  minLvl = maxLvl = vol[0];
+  for (i = 1; i < SAMPLES; i++) {
+    if (vol[i] < minLvl) minLvl = vol[i];
+    else if (vol[i] > maxLvl) maxLvl = vol[i];
+  }
+  
+  if ((maxLvl - minLvl) < TOP) maxLvl = minLvl + TOP;
+  minLvlAvg = (minLvlAvg * 63 + minLvl) >> 6;
+  maxLvlAvg = (maxLvlAvg * 63 + maxLvl) >> 6;
 }
+
 
 void updatePeak(int height) {
   if(height > peak) peak = height;
@@ -177,3 +276,5 @@ uint32_t Wheel(byte WheelPos) {
     return strip.Color(0, WheelPos * 3, 255 - WheelPos * 3);
   }
 }
+
+
