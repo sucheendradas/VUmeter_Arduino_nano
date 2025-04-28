@@ -6,10 +6,10 @@
 #define COLOR_ORDER GRB
 #define BRIGHTNESS 255
 #define MIC_PIN A4
-#define DC_OFFSET 280     // Set this to your observed silent value
-#define NOISE 20          // Adjusted for better noise rejection
+#define DC_OFFSET 280    // Calibrated for your specific microphone
+#define NOISE 20         // Adjusted noise floor
 #define SAMPLES 60
-#define PEAK_FALL 4       // Faster peak decay for 144 LEDs
+#define PEAK_FALL 4      // Faster peak decay for 144 LEDs
 #define N_PIXELS_HALF (N_PIXELS / 2)
 
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(N_PIXELS, PIN, NEO_GRB + NEO_KHZ800);
@@ -20,7 +20,7 @@ int buttonPushCounter = 0;
 int buttonState = 0;
 int lastButtonState = 0;
 
-// Audio processing variables
+// VU Meter variables
 int vol[SAMPLES];
 int lvl = 10;
 int minLvlAvg = 0;
@@ -28,86 +28,74 @@ int maxLvlAvg = 512;
 byte peak = 0;
 byte dotCount = 0;
 byte volCount = 0;
+float greenOffset = 30;
+float blueOffset = 150;
 
 void setup() {
   delay(2000);
   strip.begin();
   strip.show();
   strip.setBrightness(BRIGHTNESS);
-  
   Serial.begin(115200);
   pinMode(buttonPin, INPUT_PULLUP);
-  
   buttonPushCounter = EEPROM.read(0);
-}
-
-int readSensitivity() {
-  return -2; // Fixed sensitivity (originally from pot)
 }
 
 void loop() {
   handleButton();
-  updateVisualizer();
+  
+  switch(buttonPushCounter % 4) {
+    case 0:{ vu(); Serial.println("vu_0") ;}break;
+    case 1: vu2(); break;
+    case 2: Vu3(); break;
+    case 3: Vu4(); break;
+  }
 }
 
 void handleButton() {
   buttonState = digitalRead(buttonPin);
-  if (buttonState != lastButtonState) {
-    if (buttonState == HIGH) {
-      buttonPushCounter++;
-      if (buttonPushCounter >= 4) buttonPushCounter = 1;
-      EEPROM.write(0, buttonPushCounter);
-    }
-    lastButtonState = buttonState;
+  if (buttonState != lastButtonState && buttonState == HIGH) {
+    buttonPushCounter++;
+    EEPROM.write(0, buttonPushCounter % 4);
   }
+  lastButtonState = buttonState;
 }
 
-void updateVisualizer() {
-  switch(buttonPushCounter) {
-    case 1: vu(); break;
-    case 2: vu2(); break;
-    case 3: Vu3(); break;
-    case 4: Vu4(); break;
-  }
-}
-
-// Common audio processing
 int processAudio() {
-  static int vol[SAMPLES];
-  static int volCount = 0;
-  
   int n = analogRead(MIC_PIN);
-  n = abs(n - DC_OFFSET);
-  n = (n <= NOISE) ? 0 : (n - NOISE);
+  n = abs(n - DC_OFFSET);          // Apply DC offset
+  n = (n <= NOISE) ? 0 : (n - NOISE); // Noise filter
+  n /= 2;  // Fixed sensitivity (equivalent to val = -2)
   
-  int val = readSensitivity();
-  if(val < 0) n /= abs(val);
+  lvl = ((lvl * 7) + n) >> 3;     // Dampened reading
   
-  lvl = ((lvl * 7) + n) >> 3;
+  // Store sample for dynamic scaling
   vol[volCount] = n;
   if(++volCount >= SAMPLES) volCount = 0;
 
-  // Dynamic level adjustment
+  // Calculate dynamic level range
   uint16_t minLvl = vol[0], maxLvl = vol[0];
   for(uint8_t i=1; i<SAMPLES; i++) {
     if(vol[i] < minLvl) minLvl = vol[i];
     else if(vol[i] > maxLvl) maxLvl = vol[i];
   }
+  
   if((maxLvl - minLvl) < N_PIXELS) maxLvl = minLvl + N_PIXELS;
   minLvlAvg = (minLvlAvg * 63 + minLvl) >> 6;
   maxLvlAvg = (maxLvlAvg * 63 + maxLvl) >> 6;
 
-  return map(lvl, 0, 600, 0, N_PIXELS); // Map to your observed range
+  return map(lvl, 0, 300, 0, N_PIXELS); // Adjusted for your 280-600 range
 }
 
-// Visualization modes
 void vu() {
   int height = processAudio();
   height = constrain(height, 0, N_PIXELS);
-  
-  for(uint16_t i=0; i<N_PIXELS; i++) {
+
+  // Solid color bar with peak dot
+  for(int i=0; i<N_PIXELS; i++) {
     strip.setPixelColor(i, (i < height) ? Wheel(map(i, 0, N_PIXELS-1, 30, 150)) : 0);
   }
+  
   updatePeak(height);
   strip.show();
 }
@@ -115,12 +103,14 @@ void vu() {
 void vu2() {
   int height = processAudio();
   height = constrain(height, 0, N_PIXELS_HALF);
-  
-  for(uint16_t i=0; i<N_PIXELS_HALF; i++) {
+
+  // Mirror effect
+  for(int i=0; i<N_PIXELS_HALF; i++) {
     uint32_t color = (i < height) ? Wheel(map(i, 0, N_PIXELS_HALF-1, 30, 150)) : 0;
     strip.setPixelColor(N_PIXELS_HALF - i - 1, color);
     strip.setPixelColor(N_PIXELS_HALF + i, color);
   }
+  
   updatePeak(height);
   strip.show();
 }
@@ -128,29 +118,38 @@ void vu2() {
 void Vu3() {
   int height = processAudio();
   height = constrain(height, 0, N_PIXELS);
-  
-  for(uint16_t i=0; i<N_PIXELS; i++) {
-    strip.setPixelColor(i, (i < height) ? strip.Color(0, map(i, 0, N_PIXELS-1, 50, 255), 0) : 0);
+
+  // Gradient from green to red
+  for(int i=0; i<N_PIXELS; i++) {
+    if(i < height) {
+      strip.setPixelColor(i, strip.Color(
+        map(i, 0, N_PIXELS-1, 0, 255),  // Red
+        map(i, 0, N_PIXELS-1, 255, 0),  // Green
+        0                               // Blue
+      ));
+    } else {
+      strip.setPixelColor(i, 0);
+    }
   }
+  
   updatePeak(height);
   strip.show();
 }
 
 void Vu4() {
-  static float greenOffset = 30, blueOffset = 150;
+  static float offset = 0;
   int height = processAudio();
   height = constrain(height, 0, N_PIXELS_HALF);
-  
-  greenOffset += 0.2;
-  blueOffset += 0.2;
-  if(greenOffset >= 255) greenOffset = 0;
-  if(blueOffset >= 255) blueOffset = 0;
+  offset += 0.4;
+  if(offset >= 255) offset = 0;
 
-  for(uint16_t i=0; i<N_PIXELS_HALF; i++) {
-    uint32_t color = (i < height) ? Wheel(map(i, 0, N_PIXELS_HALF-1, greenOffset, blueOffset)) : 0;
+  // Moving rainbow effect
+  for(int i=0; i<N_PIXELS_HALF; i++) {
+    uint32_t color = (i < height) ? Wheel(map(i, 0, N_PIXELS_HALF-1, offset, offset+150) % 255) : 0;
     strip.setPixelColor(N_PIXELS_HALF - i - 1, color);
     strip.setPixelColor(N_PIXELS_HALF + i, color);
   }
+  
   updatePeak(height);
   strip.show();
 }
@@ -161,6 +160,7 @@ void updatePeak(int height) {
     if(peak > 0) peak--;
     dotCount = 0;
   }
+  
   if(peak > 0 && peak < N_PIXELS) {
     strip.setPixelColor(peak, Wheel(map(peak, 0, N_PIXELS-1, 30, 150)));
   }
